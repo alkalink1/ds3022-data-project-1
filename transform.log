@@ -1,9 +1,0 @@
-2025-09-25 16:21:46,920 - INFO - Connected to DuckDB
-2025-09-25 16:21:47,416 - INFO - Transforming yellow_trips_clean -> yellow_trips_transformed (taxi_type=yellow)
-2025-09-25 16:21:57,716 - INFO - Transforming green_trips_clean -> green_trips_transformed (taxi_type=green)
-2025-09-25 16:55:53,579 - INFO - Connected to DuckDB
-2025-09-25 16:55:54,110 - INFO - Transforming yellow_trips_2024_clean -> yellow_trips_2024_transformed (taxi_type=yellow)
-2025-09-25 16:55:59,711 - INFO - Transforming green_trips_2024_clean -> green_trips_2024_transformed (taxi_type=green)
-2025-09-27 11:12:33,085 - INFO - Connected to DuckDB
-2025-09-27 11:12:33,855 - INFO - Transforming yellow_trips_2024_clean -> yellow_trips_2024_transformed (taxi_type=yellow)
-2025-09-27 11:12:39,770 - INFO - Transforming green_trips_2024_clean -> green_trips_2024_transformed (taxi_type=green)
