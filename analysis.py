@@ -138,7 +138,7 @@ def plot_monthly(yellow_df, green_df):
         ax2.set_xticklabels([MONTH_NAMES[m] for m in range(1, 13)])
         ax2.set_ylabel("Yellow CO₂ (kg)", color="gold")
         ax2_twin.set_ylabel("Green CO₂ (kg)", color="green")
-        ax2.set_title("Monthly Taxi CO₂ Totals — 2024 (Dual Y-Axis)")
+        ax2.set_title("Monthly Taxi CO₂ Totals — 2024")
         
         # Combine legends
         lines = line1 + line2

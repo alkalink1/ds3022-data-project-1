@@ -36,22 +36,18 @@ def clean_one(con, src: str, dst: str):
     #  - Remove duplicates (DISTINCT over selected columns)
     #  - Apply filters per assignment
     sql = f"""
-        WITH base AS (
-            SELECT
-                cab_type,
-                vendor_id,
-                pickup_datetime,
-                dropoff_datetime,
-                passenger_count,
-                trip_distance,
-                date_diff('second', pickup_datetime, dropoff_datetime) AS duration_seconds
-            FROM {src}
-        ),
-        dedup AS (
-            SELECT DISTINCT
-                cab_type, vendor_id, pickup_datetime, dropoff_datetime, passenger_count, trip_distance, duration_seconds
-            FROM base
-        )
+    WITH base AS (
+        SELECT
+            cab_type,
+            vendor_id,
+            pickup_datetime,
+            dropoff_datetime,
+            passenger_count,
+            trip_distance,
+            date_diff('second', pickup_datetime, dropoff_datetime) AS duration_seconds
+        FROM {src}
+    ),
+    filtered AS (
         SELECT
             cab_type,
             vendor_id,
@@ -59,17 +55,23 @@ def clean_one(con, src: str, dst: str):
             dropoff_datetime,
             passenger_count,
             trip_distance
-        FROM dedup
+        FROM base
         WHERE
-            -- Remove trips with 0 passengers (NULLs kept, as spec only says '0')
             (passenger_count IS NULL OR passenger_count <> 0)
-            -- Remove 0-mile trips
             AND trip_distance > 0
-            -- Remove trips longer than 100 miles
             AND trip_distance <= {MAX_TRIP_MILES}
-            -- Remove trips lasting more than 1 day
             AND duration_seconds <= {MAX_TRIP_SECONDS}
-    """
+    )
+    SELECT DISTINCT
+        cab_type,
+        vendor_id,
+        pickup_datetime,
+        dropoff_datetime,
+        passenger_count,
+        trip_distance
+    FROM filtered
+"""
+
     con.execute(f"CREATE TABLE {dst} AS {sql};")
 
 def verify_clean(con, table: str):
