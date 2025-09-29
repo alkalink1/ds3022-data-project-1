@@ -10,13 +10,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = "emissions.duckdb"
+
+# Cleaning thresholds
 MAX_TRIP_SECONDS = 86_400   # 1 day
 MAX_TRIP_MILES = 100.0
 
-SRC_TABLES = [
-    ("yellow_trips_2024", "yellow_trips_2024_clean"),
-    ("green_trips_2024",  "green_trips_2024_clean"),
-]
+# Years & cabs to look for (matches what load.py creates)
+YEARS = range(2015, 2025)  # 2015..2024 inclusive
+CABS = ("yellow", "green")
+
 
 def table_exists(con, name: str) -> bool:
     row = con.execute(
@@ -25,16 +27,37 @@ def table_exists(con, name: str) -> bool:
     ).fetchone()
     return row is not None
 
-def clean_one(con, src: str, dst: str):
-    logger.info(f"Cleaning {src} -> {dst}")
 
-    # Drop any previous cleaned table
+def discover_src_tables(con):
+    """
+    Return list of (src, dst) pairs for every existing year/cab table,
+    e.g., ('yellow_trips_2017', 'yellow_trips_2017_clean').
+    """
+    pairs = []
+    for cab in CABS:
+        for y in YEARS:
+            src = f"{cab}_trips_{y}"
+            if table_exists(con, src):
+                dst = f"{src}_clean"
+                pairs.append((src, dst))
+            else:
+                logger.info("Source table not found, skipping: %s", src)
+    return pairs
+
+
+def clean_one(con, src: str, dst: str):
+    """
+    Build a cleaned table from src into dst:
+      - compute duration_seconds
+      - filter:
+          passenger_count != 0 (or NULL allowed)
+          trip_distance > 0 & <= MAX_TRIP_MILES
+          duration_seconds <= MAX_TRIP_SECONDS
+      - DISTINCT to remove dupes across selected columns
+    """
+    logger.info("Cleaning %s -> %s", src, dst)
     con.execute(f"DROP TABLE IF EXISTS {dst};")
 
-    # Build cleaned table:
-    #  - Compute duration_seconds
-    #  - Remove duplicates (DISTINCT over selected columns)
-    #  - Apply filters per assignment
     sql = f"""
     WITH base AS (
         SELECT
@@ -70,15 +93,13 @@ def clean_one(con, src: str, dst: str):
         passenger_count,
         trip_distance
     FROM filtered
-"""
-
+    """
     con.execute(f"CREATE TABLE {dst} AS {sql};")
+
 
 def verify_clean(con, table: str):
     """Verify that the five conditions no longer exist."""
     total = con.execute(f"SELECT COUNT(*) FROM {table};").fetchone()[0]
-
-    # duplicates: count difference between total rows and DISTINCT rows over all columns
     distinct = con.execute(f"SELECT COUNT(*) FROM (SELECT DISTINCT * FROM {table});").fetchone()[0]
     dupes = total - distinct
 
@@ -113,36 +134,75 @@ def verify_clean(con, table: str):
           >1 day duration:      {over_day}
     """).rstrip())
 
+
 def summarize_before_after(con, src: str, dst: str):
     raw = con.execute(f"SELECT COUNT(*) FROM {src};").fetchone()[0]
     clean = con.execute(f"SELECT COUNT(*) FROM {dst};").fetchone()[0]
     print(f"[{src} -> {dst}] Raw: {raw:,}  |  Clean: {clean:,}  |  Removed: {raw - clean:,}")
+
+
+def build_unions(con, cleaned_pairs):
+    """
+    Build three consolidated union tables across all years:
+      - yellow_trips_clean_all
+      - green_trips_clean_all
+      - all_trips_clean_2015_2024
+    """
+    # Per-cab collections
+    yellow_clean = [dst for (src, dst) in cleaned_pairs if src.startswith("yellow_")]
+    green_clean  = [dst for (src, dst) in cleaned_pairs if src.startswith("green_")]
+
+    def make_union_table(name: str, tables: list[str]):
+        con.execute(f"DROP TABLE IF EXISTS {name};")
+        if not tables:
+            logger.info("No tables to union for %s", name)
+            return
+        union_sql = " UNION ALL ".join([f"SELECT * FROM {t}" for t in tables])
+        con.execute(f"CREATE TABLE {name} AS {union_sql};")
+        cnt = con.execute(f"SELECT COUNT(*) FROM {name};").fetchone()[0]
+        # pre-format the count with commas for logging
+        logger.info("Created %s with %s rows", name, f"{cnt:,}")
+        print(f"[UNION] {name}: {cnt:,} rows")
+
+    make_union_table("yellow_trips_clean_all", yellow_clean)
+    make_union_table("green_trips_clean_all", green_clean)
+    make_union_table("all_trips_clean_2015_2024", yellow_clean + green_clean)
+
 
 def main():
     try:
         con = duckdb.connect(DB_PATH, read_only=False)
         logger.info("Connected to DuckDB")
 
-        any_found = False
-        for src, dst in SRC_TABLES:
-            if table_exists(con, src):
-                any_found = True
-                clean_one(con, src, dst)
-                summarize_before_after(con, src, dst)
-                verify_clean(con, dst)
-            else:
-                print(f"[WARN] Source table '{src}' not found. Skipping.")
+        # Discover all source tables that actually exist
+        cleaned_pairs = []
+        for src, dst in discover_src_tables(con):
+            clean_one(con, src, dst)
+            summarize_before_after(con, src, dst)
+            verify_clean(con, dst)
+            cleaned_pairs.append((src, dst))
 
-        if not any_found:
+        if not cleaned_pairs:
             print("No source tables found. Run load.py first.")
             return
 
-        print("\nCleaning complete. Cleaned tables: "
-              + ", ".join([dst for src, dst in SRC_TABLES if table_exists(con, dst)]))
+        # Build consolidated union tables for convenience
+        build_unions(con, cleaned_pairs)
+
+        # Final summary
+        made = ", ".join(dst for _, dst in cleaned_pairs)
+        print("\nCleaning complete.")
+        print(f"Created cleaned tables: {made}")
+        if any(s.startswith("yellow_") for s, _ in cleaned_pairs):
+            print("Created union: yellow_trips_clean_all")
+        if any(s.startswith("green_") for s, _ in cleaned_pairs):
+            print("Created union: green_trips_clean_all")
+        print("Created union: all_trips_clean_2015_2024")
 
     except Exception as e:
         logger.exception("Error during cleaning")
         print(f"An error occurred: {e}")
+
 
 if __name__ == "__main__":
     main()

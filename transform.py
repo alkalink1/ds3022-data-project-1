@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = "emissions.duckdb"
 SECONDS_PER_HOUR = 3600.0
 
-PAIRS = [
-    ("yellow_trips_2024_clean", "yellow_trips_2024_transformed", "yellow"),
-    ("green_trips_2024_clean",  "green_trips_2024_transformed",  "green"),
-]
+# Years & cabs to look for (matches load/clean)
+YEARS = range(2015, 2025)  # 2015..2024 inclusive
+CABS = ("yellow", "green")
+
 
 def table_exists(con, name: str) -> bool:
     row = con.execute(
@@ -25,6 +25,7 @@ def table_exists(con, name: str) -> bool:
     ).fetchone()
     return row is not None
 
+
 def get_emissions_cols(con):
     return {
         r[0].lower()
@@ -32,6 +33,7 @@ def get_emissions_cols(con):
             "SELECT column_name FROM information_schema.columns WHERE table_name = 'vehicle_emissions';"
         ).fetchall()
     }
+
 
 def build_emissions_cte(con, taxi_type: str) -> str:
     cols = get_emissions_cols(con)
@@ -57,21 +59,21 @@ def build_emissions_cte(con, taxi_type: str) -> str:
             )
         """).strip()
 
-def transform_one(con, src: str, dst: str, taxi_type: str):
-    logger.info(f"Transforming {src} -> {dst} (taxi_type={taxi_type})")
+
+def transform_one(con, src_clean: str, dst_transformed: str, taxi_type: str):
+    logger.info("Transforming %s -> %s (taxi_type=%s)", src_clean, dst_transformed, taxi_type)
 
     # Ensure prerequisites
     if not table_exists(con, "vehicle_emissions"):
         raise RuntimeError("vehicle_emissions lookup table not found. Run load.py first.")
-    if not table_exists(con, src):
-        raise RuntimeError(f"Source cleaned table not found: {src}. Run clean.py first.")
+    if not table_exists(con, src_clean):
+        raise RuntimeError(f"Source cleaned table not found: {src_clean}. Run clean.py first.")
 
-    con.execute(f"DROP TABLE IF EXISTS {dst};")
+    con.execute(f"DROP TABLE IF EXISTS {dst_transformed};")
 
     emissions_cte = build_emissions_cte(con, taxi_type)
 
     # Compose the transform query
-    # Note: we project each column explicitly to avoid carrying helper columns forward.
     sql = f"""
         WITH
         base AS (
@@ -83,7 +85,7 @@ def transform_one(con, src: str, dst: str, taxi_type: str):
                 passenger_count,
                 trip_distance,
                 date_diff('second', pickup_datetime, dropoff_datetime)::DOUBLE AS duration_seconds
-            FROM {src}
+            FROM {src_clean}
         ),
         {emissions_cte}
         SELECT
@@ -106,14 +108,14 @@ def transform_one(con, src: str, dst: str, taxi_type: str):
         FROM base b
         CROSS JOIN ve
     """
-    con.execute(f"CREATE TABLE {dst} AS {sql};")
+    con.execute(f"CREATE TABLE {dst_transformed} AS {sql};")
 
     # Verify columns exist
     cols = {
         r[0].lower()
         for r in con.execute(
             "SELECT column_name FROM information_schema.columns WHERE table_name = ?;",
-            [dst]
+            [dst_transformed]
         ).fetchall()
     }
     expected = {
@@ -123,46 +125,101 @@ def transform_one(con, src: str, dst: str, taxi_type: str):
     }
     missing = expected - cols
     if missing:
-        raise RuntimeError(f"{dst} missing expected columns: {missing}")
+        raise RuntimeError(f"{dst_transformed} missing expected columns: {missing}")
 
     # Print a small summary and a few sample rows
-    count = con.execute(f"SELECT COUNT(*) FROM {dst};").fetchone()[0]
+    count = con.execute(f"SELECT COUNT(*) FROM {dst_transformed};").fetchone()[0]
     ex = con.execute(
         f"""
         SELECT cab_type, trip_distance, trip_co2_kgs, avg_mph,
                hour_of_day, day_of_week, week_of_year, month_of_year
-        FROM {dst} LIMIT 3;
+        FROM {dst_transformed} LIMIT 3;
         """
     ).fetchall()
     print(dedent(f"""
-        [{dst}] rows: {count:,}
+        [{dst_transformed}] rows: {count:,}
         Sample rows:
           {ex}
     """).rstrip())
+
+
+def discover_cleaned_tables(con):
+    """
+    Return a list of tuples: (src_clean, dst_transformed, taxi_type)
+    for all existing cleaned tables across years/cabs.
+    """
+    pairs = []
+    for cab in CABS:
+        for y in YEARS:
+            src = f"{cab}_trips_{y}_clean"
+            if table_exists(con, src):
+                dst = f"{cab}_trips_{y}_transformed"
+                pairs.append((src, dst, cab))
+            else:
+                logger.info("Cleaned table not found, skipping: %s", src)
+    return pairs
+
+
+def build_unions(con, transformed_tables):
+    """
+    Build three consolidated union tables across all transformed tables:
+      - yellow_trips_transformed_all
+      - green_trips_transformed_all
+      - all_trips_transformed_2015_2024
+    """
+    yellow_t = [t for t in transformed_tables if t.startswith("yellow_")]
+    green_t  = [t for t in transformed_tables if t.startswith("green_")]
+
+    def make_union_table(name: str, tables: list[str]):
+        con.execute(f"DROP TABLE IF EXISTS {name};")
+        if not tables:
+            logger.info("No tables to union for %s", name)
+            return
+        union_sql = " UNION ALL ".join([f"SELECT * FROM {t}" for t in tables])
+        con.execute(f"CREATE TABLE {name} AS {union_sql};")
+        cnt = con.execute(f"SELECT COUNT(*) FROM {name};").fetchone()[0]
+        # Pre-format the count (avoid logging % ,d)
+        logger.info("Created %s with %s rows", name, f"{cnt:,}")
+        print(f"[UNION] {name}: {cnt:,} rows")
+
+    make_union_table("yellow_trips_transformed_all", yellow_t)
+    make_union_table("green_trips_transformed_all", green_t)
+    make_union_table("all_trips_transformed_2015_2024", yellow_t + green_t)
+
 
 def main():
     try:
         con = duckdb.connect(DB_PATH, read_only=False)
         logger.info("Connected to DuckDB")
 
-        any_done = False
-        for src, dst, taxi in PAIRS:
-            if table_exists(con, src):
-                transform_one(con, src, dst, taxi)
-                any_done = True
-            else:
-                print(f"[WARN] '{src}' not found. Skipping.")
-
-        if not any_done:
+        # Discover all cleaned tables that actually exist
+        worklist = discover_cleaned_tables(con)
+        if not worklist:
             print("No cleaned tables found. Run clean.py first.")
             return
 
+        created = []
+        for src_clean, dst_transformed, taxi in worklist:
+            transform_one(con, src_clean, dst_transformed, taxi)
+            created.append(dst_transformed)
+
+        # Build consolidated unions
+        build_unions(con, created)
+
+        # Final summary
+        made = ", ".join(created)
         print("\n=== TRANSFORM COMPLETE ===")
-        print("Created tables (if inputs existed): yellow_trips_2024_transformed, green_trips_2024_transformed")
+        print(f"Created transformed tables: {made}")
+        if any(t.startswith("yellow_") for t in created):
+            print("Created union: yellow_trips_transformed_all")
+        if any(t.startswith("green_") for t in created):
+            print("Created union: green_trips_transformed_all")
+        print("Created union: all_trips_transformed_2015_2024")
 
     except Exception as e:
         logger.exception("Transform error")
         print(f"An error occurred: {e}")
+
 
 if __name__ == "__main__":
     main()
