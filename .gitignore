@@ -1,0 +1,19 @@
+# Ignore DuckDB database
+*.duckdb
+
+# Ignore logs
+*.log
+logs/
+
+# Ignore dbt build artifacts
+target/
+
+# Ignore Parquet data
+*.parquet
+
+# Ignore verify scripts
+verify_*.py
+
+# Ignore Python cache
+__pycache__/
+*.pyc

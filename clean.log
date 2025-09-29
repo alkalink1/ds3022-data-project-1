@@ -7,3 +7,5 @@
 2025-09-25 16:47:24,938 - INFO - Connected to DuckDB
 2025-09-25 16:47:25,541 - INFO - Cleaning yellow_trips_2024 -> yellow_trips_2024_clean
 2025-09-25 16:47:36,020 - INFO - Cleaning green_trips_2024 -> green_trips_2024_clean
+2025-09-28 17:03:50,700 - INFO - Connected to DuckDB
+2025-09-28 17:03:52,646 - INFO - Cleaning yellow_trips_2024 -> yellow_trips_2024_clean
