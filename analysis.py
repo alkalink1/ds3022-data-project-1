@@ -19,6 +19,7 @@ CAB_TABLES = {
     "GREEN":  "green_trips_transformed_all",
 }
 
+# Check if a table exists in DuckDB
 def table_exists(con, name: str) -> bool:
     row = con.execute(
         "SELECT 1 FROM information_schema.tables WHERE table_name = ?;",
@@ -26,11 +27,13 @@ def table_exists(con, name: str) -> bool:
     ).fetchone()
     return row is not None
 
+# Print a section header label
 def label_header(title: str):
     print("\n" + "=" * len(title))
     print(title)
     print("=" * len(title))
 
+# Get min/max pickup_datetime and row count
 def get_date_range(con, table):
     q = f"""
         SELECT
@@ -41,6 +44,7 @@ def get_date_range(con, table):
     """
     return con.execute(q).fetchdf().iloc[0]
 
+# Get the highest CO₂ single trip
 def get_max_trip(con, table):
     q = f"""
         SELECT
@@ -57,6 +61,7 @@ def get_max_trip(con, table):
     """
     return con.execute(q).fetchdf()
 
+# Average CO₂ grouped by a bucket column
 def avg_by_bucket(con, table, bucket_col):
     q = f"""
         SELECT {bucket_col} AS bucket, AVG(trip_co2_kgs) AS avg_co2
@@ -67,8 +72,8 @@ def avg_by_bucket(con, table, bucket_col):
     """
     return con.execute(q).fetchdf()
 
+# Monthly totals across all 10 years
 def monthly_totals_full(con, table):
-    # Monthly totals across all 10 years
     q = f"""
         SELECT
             date_trunc('month', pickup_datetime) AS ym,
@@ -84,6 +89,7 @@ def monthly_totals_full(con, table):
     df["label"] = df["ym"].dt.strftime("%Y-%m")
     return df
 
+# Find heaviest and lightest total-CO₂ months
 def heaviest_lightest_month_totals(df):
     if df.empty:
         return None, None
@@ -91,6 +97,7 @@ def heaviest_lightest_month_totals(df):
     light = df.loc[df["total_co2"].idxmin()]
     return heavy, light
 
+# Print summary stats for a cab table
 def analyze_cab(con, table: str, label: str):
     if not table_exists(con, table):
         print(f"[WARN] Missing table '{table}'. Skipping {label}.")
@@ -158,6 +165,7 @@ def analyze_cab(con, table: str, label: str):
     # Return monthly totals for plotting
     return mt
 
+# Plot monthly totals for 2015–2024
 def plot_monthly_10yr(y_df: pd.DataFrame | None, g_df: pd.DataFrame | None):
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
@@ -209,6 +217,7 @@ def plot_monthly_10yr(y_df: pd.DataFrame | None, g_df: pd.DataFrame | None):
     print(f"[Plot] Saved monthly CO₂ totals to: {out_path}")
 
 
+# Plot yearly totals for 2015–2024
 def plot_yearly_10yr(y_df: pd.DataFrame | None, g_df: pd.DataFrame | None):
     import matplotlib.pyplot as plt
     import os
@@ -260,6 +269,7 @@ def plot_yearly_10yr(y_df: pd.DataFrame | None, g_df: pd.DataFrame | None):
     plt.savefig(out_path, dpi=150)
     print(f"[Plot] Saved yearly CO₂ totals to: {out_path}")
 
+# Orchestrate analysis and plotting
 def main():
     con = duckdb.connect(DB_PATH, read_only=True)
 

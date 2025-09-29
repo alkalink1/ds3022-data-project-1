@@ -18,6 +18,7 @@ YEARS = range(2015, 2025)  # 2015..2024 inclusive
 CABS = ("yellow", "green")
 
 
+# Check if a table exists in DuckDB
 def table_exists(con, name: str) -> bool:
     row = con.execute(
         "SELECT 1 FROM information_schema.tables WHERE table_name = ?;",
@@ -26,6 +27,7 @@ def table_exists(con, name: str) -> bool:
     return row is not None
 
 
+# Get lowercase column names from vehicle_emissions
 def get_emissions_cols(con):
     return {
         r[0].lower()
@@ -35,6 +37,7 @@ def get_emissions_cols(con):
     }
 
 
+# Build CTE to fetch emissions factor
 def build_emissions_cte(con, taxi_type: str) -> str:
     cols = get_emissions_cols(con)
     if "co2_grams_per_mile" not in cols:
@@ -60,6 +63,7 @@ def build_emissions_cte(con, taxi_type: str) -> str:
         """).strip()
 
 
+# Transform one cleaned table into enriched metrics
 def transform_one(con, src_clean: str, dst_transformed: str, taxi_type: str):
     logger.info("Transforming %s -> %s (taxi_type=%s)", src_clean, dst_transformed, taxi_type)
 
@@ -143,6 +147,7 @@ def transform_one(con, src_clean: str, dst_transformed: str, taxi_type: str):
     """).rstrip())
 
 
+# List available cleaned tables to transform
 def discover_cleaned_tables(con):
     """
     Return a list of tuples: (src_clean, dst_transformed, taxi_type)
@@ -160,6 +165,7 @@ def discover_cleaned_tables(con):
     return pairs
 
 
+# Create union tables across all transformed years
 def build_unions(con, transformed_tables):
     """
     Build three consolidated union tables across all transformed tables:
@@ -170,6 +176,7 @@ def build_unions(con, transformed_tables):
     yellow_t = [t for t in transformed_tables if t.startswith("yellow_")]
     green_t  = [t for t in transformed_tables if t.startswith("green_")]
 
+    # Helper to create a union table
     def make_union_table(name: str, tables: list[str]):
         con.execute(f"DROP TABLE IF EXISTS {name};")
         if not tables:
@@ -187,6 +194,7 @@ def build_unions(con, transformed_tables):
     make_union_table("all_trips_transformed_2015_2024", yellow_t + green_t)
 
 
+# Orchestrate transforms and unions
 def main():
     try:
         con = duckdb.connect(DB_PATH, read_only=False)

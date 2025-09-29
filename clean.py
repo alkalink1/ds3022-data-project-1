@@ -20,6 +20,7 @@ YEARS = range(2015, 2025)  # 2015..2024 inclusive
 CABS = ("yellow", "green")
 
 
+# Check if a table exists in DuckDB
 def table_exists(con, name: str) -> bool:
     row = con.execute(
         "SELECT 1 FROM information_schema.tables WHERE table_name = ?;",
@@ -28,11 +29,8 @@ def table_exists(con, name: str) -> bool:
     return row is not None
 
 
+# Return (src,dst) pairs for all existing per-year cab tables
 def discover_src_tables(con):
-    """
-    Return list of (src, dst) pairs for every existing year/cab table,
-    e.g., ('yellow_trips_2017', 'yellow_trips_2017_clean').
-    """
     pairs = []
     for cab in CABS:
         for y in YEARS:
@@ -45,16 +43,8 @@ def discover_src_tables(con):
     return pairs
 
 
+# Build a cleaned table from src into dst
 def clean_one(con, src: str, dst: str):
-    """
-    Build a cleaned table from src into dst:
-      - compute duration_seconds
-      - filter:
-          passenger_count != 0 (or NULL allowed)
-          trip_distance > 0 & <= MAX_TRIP_MILES
-          duration_seconds <= MAX_TRIP_SECONDS
-      - DISTINCT to remove dupes across selected columns
-    """
     logger.info("Cleaning %s -> %s", src, dst)
     con.execute(f"DROP TABLE IF EXISTS {dst};")
 
@@ -97,8 +87,8 @@ def clean_one(con, src: str, dst: str):
     con.execute(f"CREATE TABLE {dst} AS {sql};")
 
 
+# Verify the cleaned table meets constraints
 def verify_clean(con, table: str):
-    """Verify that the five conditions no longer exist."""
     total = con.execute(f"SELECT COUNT(*) FROM {table};").fetchone()[0]
     distinct = con.execute(f"SELECT COUNT(*) FROM (SELECT DISTINCT * FROM {table});").fetchone()[0]
     dupes = total - distinct
@@ -135,23 +125,20 @@ def verify_clean(con, table: str):
     """).rstrip())
 
 
+# Print row counts before/after cleaning
 def summarize_before_after(con, src: str, dst: str):
     raw = con.execute(f"SELECT COUNT(*) FROM {src};").fetchone()[0]
     clean = con.execute(f"SELECT COUNT(*) FROM {dst};").fetchone()[0]
     print(f"[{src} -> {dst}] Raw: {raw:,}  |  Clean: {clean:,}  |  Removed: {raw - clean:,}")
 
 
+# Build union tables across all cleaned yearly tables
 def build_unions(con, cleaned_pairs):
-    """
-    Build three consolidated union tables across all years:
-      - yellow_trips_clean_all
-      - green_trips_clean_all
-      - all_trips_clean_2015_2024
-    """
     # Per-cab collections
     yellow_clean = [dst for (src, dst) in cleaned_pairs if src.startswith("yellow_")]
     green_clean  = [dst for (src, dst) in cleaned_pairs if src.startswith("green_")]
 
+    # Helper to create a union table
     def make_union_table(name: str, tables: list[str]):
         con.execute(f"DROP TABLE IF EXISTS {name};")
         if not tables:
@@ -169,6 +156,7 @@ def build_unions(con, cleaned_pairs):
     make_union_table("all_trips_clean_2015_2024", yellow_clean + green_clean)
 
 
+# Orchestrate cleaning and union building
 def main():
     try:
         con = duckdb.connect(DB_PATH, read_only=False)

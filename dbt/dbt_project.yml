@@ -12,6 +12,9 @@ macro-paths: ["macros"]
 snapshot-paths: ["snapshots"]
 
 models:
-  nyc_taxi_emissions:
+  taxi_co2:            
+    +materialized: table
     staging:
-      +materialized: table
+      +schema: main   
+    transformed:
+      +schema: main
